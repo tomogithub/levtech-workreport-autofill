@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "LevTech Workreport Autofill",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "LevTech Platformの作業報告書に開始時間、終了時間、休憩時間、作業内容をまとめて入力します。",
   "permissions": [
     "storage"
@@ -16,8 +16,7 @@
   "content_scripts": [
     {
       "matches": [
-        "https://platform.levtech.jp/p/workreport/input*",
-        "https://platform.levtech.jp/p/workreport/input/*"
+        "https://platform.levtech.jp/p/*"
       ],
       "js": [
         "src/content.js"

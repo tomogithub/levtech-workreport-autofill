@@ -36,14 +36,14 @@ async function refreshStatus() {
     const status = await chrome.tabs.sendMessage(tab.id, { type: "GET_REPORT_STATUS" });
 
     if (!status?.ok) {
-      setUnavailable("作業報告書の入力画面で開いてください。");
+      setUnavailable("作業報告の詳細画面（/p/work-report/…）で開いてください。ページを再読み込みすると認識される場合があります。");
       return;
     }
 
-    pageStatus.textContent = `${status.month || "作業報告書"} / ${status.workdays}営業日 / 入力済み${status.filledRows}日`;
+    pageStatus.textContent = `${status.month || "作業報告書"} / ${status.workdays}営業日（土日祝除く） / 入力済み${status.filledRows}日`;
     applyButton.disabled = false;
   } catch {
-    setUnavailable("作業報告書の入力画面で開いてください。");
+    setUnavailable("作業報告の詳細画面（/p/work-report/…）で開いてください。ページを再読み込みすると認識される場合があります。");
   }
 }
 
