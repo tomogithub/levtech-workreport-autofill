@@ -16,44 +16,46 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   return false;
 });
 
+const FIELD_KEYS = ["startTime", "endTime", "breakTime", "comment"];
+
 function getReportStatus() {
   const rows = getReportRows();
   return {
     ok: rows.length > 0,
     month: getReportMonth(),
     totalRows: rows.length,
-    workdays: rows.filter((row) => !row.isWeekend).length,
-    filledRows: rows.filter((row) => row.start.value || row.end.value || row.break.value || row.content.value).length
+    workdays: rows.filter((row) => !row.isDayOff).length,
+    filledRows: rows.filter(rowHasValue).length
   };
 }
 
 function applyWorkreportValues(settings) {
   const values = normalizeSettings(settings);
   const rows = getReportRows();
+  if (rows.length === 0) {
+    throw new Error("作業報告書の入力欄が見つかりません。");
+  }
+
   let changed = 0;
   let skipped = 0;
 
   rows.forEach((row) => {
-    if (values.weekdaysOnly && row.isWeekend) {
+    if (values.weekdaysOnly && row.isDayOff) {
       skipped += 1;
       return;
     }
 
-    const rowHasValue = row.start.value || row.end.value || row.break.value || row.content.value;
-    if (!values.overwrite && rowHasValue) {
+    if (!values.overwrite && rowHasValue(row)) {
       skipped += 1;
       return;
     }
 
-    setInputValue(row.start, values.startTime);
-    setInputValue(row.end, values.endTime);
-    setInputValue(row.break, values.breakTime);
-    setInputValue(row.content, values.workContent);
-    updateWorkTime(row.dateKey, values.startTime, values.endTime, values.breakTime);
+    setInputValue(row.startTime, values.startTime);
+    setInputValue(row.endTime, values.endTime);
+    setInputValue(row.breakTime, values.breakTime);
+    setInputValue(row.comment, values.workContent);
     changed += 1;
   });
-
-  updateMonthlySummary();
 
   return {
     ok: true,
@@ -100,105 +102,79 @@ function normalizeTime(value, fallback) {
   return `${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
 }
 
+// 入力欄は name="rows.{index}.{startTime|endTime|breakTime|comment}" の形式。
+// index ごとに1行としてまとめる。
 function getReportRows() {
-  return Array.from(document.querySelectorAll("#working-report tr"))
-    .map((tr) => {
-      const targetDate = tr.querySelector('input[name$="[target_date]"]');
-      if (!targetDate) {
-        return null;
-      }
+  const rowsByIndex = new Map();
 
-      const dateKey = targetDate.name.match(/\[DailyReport\]\[(\d{8})\]/)?.[1];
-      if (!dateKey) {
-        return null;
-      }
+  document.querySelectorAll('input[name^="rows."]').forEach((input) => {
+    const match = input.name.match(/^rows\.(\d+)\.(\w+)$/);
+    if (!match || !FIELD_KEYS.includes(match[2])) {
+      return;
+    }
 
-      const label = tr.querySelector("td.txtNormal")?.textContent || "";
-      const start = tr.querySelector(`input[datetime="${dateKey}"][ref="start_time"]`);
-      const end = tr.querySelector(`input[datetime="${dateKey}"][ref="end_time"]`);
-      const breakInput = tr.querySelector(`input[datetime="${dateKey}"][ref="relax_time"]`);
-      const content = tr.querySelector(`input[name="data[DailyReport][${dateKey}][work_content]"]`);
+    const index = Number(match[1]);
+    if (!rowsByIndex.has(index)) {
+      rowsByIndex.set(index, { index });
+    }
+    rowsByIndex.get(index)[match[2]] = input;
+  });
 
-      if (!start || !end || !breakInput || !content) {
-        return null;
-      }
-
+  return Array.from(rowsByIndex.values())
+    .filter((row) => FIELD_KEYS.every((key) => row[key]))
+    .sort((a, b) => a.index - b.index)
+    .map((row) => {
+      const tr = row.startTime.closest("tr");
+      const labelCell = tr?.querySelector("td");
       return {
-        dateKey,
-        isWeekend: /[（(][土日][）)]/.test(label),
-        start,
-        end,
-        break: breakInput,
-        content
+        ...row,
+        label: labelCell?.textContent.trim() || "",
+        isDayOff: isDayOff(labelCell)
       };
-    })
-    .filter(Boolean);
+    });
 }
+
+// 土曜・日曜・祝日は日付セルに *_labelSaturday / *_labelHolidayOrSunday が付く。
+// CSS Modules の接頭辞（例: u3eC6a_）は変わりうるので後半一致で判定し、曜日表記も予備で見る。
+function isDayOff(labelCell) {
+  if (!labelCell) {
+    return false;
+  }
+
+  if (labelCell.querySelector('[class*="_labelSaturday"], [class*="_labelHolidayOrSunday"]')) {
+    return true;
+  }
+
+  return /[（(][土日祝][）)]/.test(labelCell.textContent);
+}
+
+function rowHasValue(row) {
+  return FIELD_KEYS.some((key) => row[key].value.trim());
+}
+
+// React の制御コンポーネントは input.value への直接代入を検知しないため、
+// ネイティブの setter で値を設定してから input イベントを発火する。
+const nativeValueSetter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value").set;
 
 function setInputValue(input, value) {
-  input.focus();
-  input.value = value;
-  ["input", "change", "keyup", "blur", "focusout"].forEach((eventName) => {
-    input.dispatchEvent(new Event(eventName, { bubbles: true }));
-  });
-}
-
-function updateWorkTime(dateKey, startTime, endTime, breakTime) {
-  const workTime = calculateWorkTime(startTime, endTime, breakTime);
-  const display = document.querySelector(`.work_time_field[datetime="${dateKey}"]`);
-  const hidden = document.querySelector(`input[name="data[DailyReport][${dateKey}][work_time]"]`);
-
-  if (display) {
-    display.textContent = workTime;
+  if (input.disabled || input.readOnly) {
+    return;
   }
 
-  if (hidden) {
-    hidden.value = workTime;
-    hidden.dispatchEvent(new Event("change", { bubbles: true }));
-  }
+  input.dispatchEvent(new FocusEvent("focusin", { bubbles: true }));
+  nativeValueSetter.call(input, value);
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  input.dispatchEvent(new FocusEvent("focusout", { bubbles: true }));
+  input.dispatchEvent(new FocusEvent("blur"));
 }
 
-function calculateWorkTime(startTime, endTime, breakTime) {
-  const start = timeToMinutes(startTime);
-  const end = timeToMinutes(endTime);
-  const rest = timeToMinutes(breakTime);
-  const total = Math.max(0, end - start - rest);
-  return `${String(Math.floor(total / 60)).padStart(2, "0")}:${String(total % 60).padStart(2, "0")}`;
-}
-
-function timeToMinutes(value) {
-  const [hour, minute] = value.split(":").map(Number);
-  return hour * 60 + minute;
-}
-
-function updateMonthlySummary() {
-  const filledWorkTimes = Array.from(document.querySelectorAll(".work_time_field"))
-    .map((field) => field.textContent.trim())
-    .filter(Boolean);
-  const totalMinutes = filledWorkTimes.reduce((sum, value) => sum + timeToMinutes(value), 0);
-  const workingDay = filledWorkTimes.length;
-  const totalTime = `${Math.floor(totalMinutes / 60)}:${String(totalMinutes % 60).padStart(2, "0")}`;
-
-  setText(".working_day", workingDay ? `${workingDay}.0` : "0.0");
-  setText(".actualy_work_time", workingDay ? totalTime : "");
-  setValue("#MonthlyReportWorkingDay", String(workingDay));
-  setValue("#MonthlyReportActualyWorkTime", workingDay ? totalTime : "");
-}
-
-function setText(selector, value) {
-  const element = document.querySelector(selector);
-  if (element) {
-    element.textContent = value;
-  }
-}
-
-function setValue(selector, value) {
-  const element = document.querySelector(selector);
-  if (element) {
-    element.value = value;
-  }
-}
-
+// ヘッダーの「対象期間 2026/10/01 ～ 2026/10/31」から対象月を取得する。
 function getReportMonth() {
-  return document.querySelector(".reportTop__list__data__txtInput")?.textContent.trim() || "";
+  const text = document.body?.innerText || "";
+  const match = text.match(/対象期間\s*(\d{4})\/(\d{1,2})\/\d{1,2}/);
+  if (!match) {
+    return "";
+  }
+  return `${match[1]}年${Number(match[2])}月`;
 }
